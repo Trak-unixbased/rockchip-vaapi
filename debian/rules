@@ -1,0 +1,18 @@
+#!/usr/bin/make -f
+
+include /usr/share/dpkg/architecture.mk
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	$(MAKE) all
+
+override_dh_auto_install:
+	install -D -m 755 rockchip_drv_video.so \
+		$(CURDIR)/debian/rockchip-vaapi/usr/lib/$(DEB_HOST_MULTIARCH)/dri/rockchip_drv_video.so
+
+override_dh_auto_clean:
+	$(MAKE) clean
+
+override_dh_auto_test:

@@ -1,0 +1,40 @@
+rockchip-vaapi (1.0.4-1) noble; urgency=low
+
+  * Add MOZ_ENABLE_WAYLAND=1 to environment: Firefox uses Wayland natively
+    when WAYLAND_DISPLAY is set (e.g. sway), enabling full DMABUF zero-copy.
+  * Add MOZ_X11_EGL=1 to environment: Firefox uses EGL on X11 sessions,
+    enabling hardware WebRender via Mali-G610 (panthor/panfrost, GLES 3.1).
+
+ -- Eduardo García-Mádico Portabella <woodyst@gmail.com>  Fri, 25 Apr 2026 14:30:00 +0000
+
+rockchip-vaapi (1.0.3-1) noble; urgency=low
+
+  * Add debconf question to configure system-wide VA-API environment variables.
+  * Install /etc/profile.d/rockchip-vaapi.sh (terminal sessions).
+  * Install /etc/environment.d/60-rockchip-vaapi.conf (systemd desktop sessions).
+  * Supports dpkg-reconfigure to change the choice after installation.
+
+ -- Eduardo García-Mádico Portabella <woodyst@gmail.com>  Thu, 24 Apr 2026 15:00:00 +0000
+
+rockchip-vaapi (1.0.2-1) noble; urgency=low
+
+  * Fix author name to full name: Eduardo García-Mádico Portabella, EGP Sistemas.
+  * Add README.md, INSTALL.md and docs/DEVELOPMENT.md.
+
+ -- Eduardo García-Mádico Portabella <woodyst@gmail.com>  Thu, 24 Apr 2026 14:00:00 +0000
+
+rockchip-vaapi (1.0.1-1) noble; urgency=low
+
+  * Change license from MIT to LGPL-2.1-or-later.
+  * Add LGPL-2.1+ SPDX headers to all source files.
+
+ -- Eduardo García-Mádico Portabella <woodyst@gmail.com>  Thu, 24 Apr 2026 13:00:00 +0000
+
+rockchip-vaapi (1.0.0-1) noble; urgency=low
+
+  * Initial release.
+  * VA-API 1.20 vtable implementation bridging libva to librockchip-mpp1.
+  * H.264 hardware decode with DRM PRIME 2 zero-copy surface export.
+  * H.264 Annex B SPS/PPS reconstruction via Exp-Golomb encoding.
+
+ -- Eduardo García-Mádico Portabella <woodyst@gmail.com>  Thu, 24 Apr 2026 12:00:00 +0000

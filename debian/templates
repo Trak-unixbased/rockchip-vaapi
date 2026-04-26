@@ -1,0 +1,21 @@
+Template: rockchip-vaapi/configure-environment
+Type: boolean
+Default: true
+Description: ¿Configurar variables de entorno VA-API para Firefox?
+ Este paquete puede instalar configuración de entorno para que Firefox
+ utilice automáticamente el driver de aceleración hardware Rockchip,
+ sin necesidad de definir variables manualmente en cada sesión.
+ .
+ Se instalarán:
+   /etc/profile.d/rockchip-vaapi.sh       (sesiones de terminal)
+   /etc/environment.d/60-rockchip-vaapi.conf  (sesiones de escritorio)
+ .
+ Las variables que se configurarán son:
+   LIBVA_DRIVER_NAME=rockchip
+   LIBVA_DRIVERS_PATH=/usr/lib/aarch64-linux-gnu/dri
+   MOZ_DISABLE_RDD_SANDBOX=1
+ .
+ Es necesario cerrar sesión y volver a iniciarla para que surtan efecto.
+ .
+ Si responde No, puede configurarlo manualmente más tarde ejecutando:
+   dpkg-reconfigure rockchip-vaapi
