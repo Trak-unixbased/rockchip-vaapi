@@ -858,6 +858,11 @@ static VAStatus rk_SyncSurface(VADriverContextP ctx, VASurfaceID id) {
     if (!s) return VA_STATUS_ERROR_INVALID_SURFACE;
 
     pthread_mutex_lock(&s->lock);
+    /* Placeholder surfaces are never decoded — return immediately */
+    if (s->priv_buf) {
+        pthread_mutex_unlock(&s->lock);
+        return VA_STATUS_SUCCESS;
+    }
     bool already_done = s->decoded;
     struct timespec deadline;
     clock_gettime(CLOCK_REALTIME, &deadline);
