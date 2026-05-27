@@ -1,3 +1,47 @@
+rockchip-vaapi (1.0.7-1) noble; urgency=high
+
+  * Fix NS_ERROR_DOM_MEDIA_FATAL_ERR crash at quality transitions: BeginPicture
+    no longer closes the surface's prime_fd. Firefox calls ExportSurfaceHandle
+    from a compositor thread without SyncSurface while EndPicture polls MPP;
+    prime_fd was -1 causing ERROR_INVALID_SURFACE. Now BeginPicture keeps the
+    previous fd (placeholder or last decoded frame) valid; assign_mpp_frame
+    replaces it atomically when the real decoded frame arrives.
+  * assign_mpp_frame: update s->width/s->height from actual decoded frame
+    dimensions so ExportSurfaceHandle reports the correct stride after a DASH
+    quality switch (mismatch between surface width and pitch was also causing
+    NS_ERROR_DOM_MEDIA_FATAL_ERR in earlier sessions).
+  * do_h264_decode / do_generic_decode: add pre-drain loop before
+    decode_put_packet to consume frames MPP already has queued from previous
+    packets; reduce EndPicture poll window from 500ms to 100ms.
+  * SyncSurface: extend drain timeout from 2s to 3s.
+
+ -- Eduardo García-Mádico Portabella <woodyst@gmail.com>  Wed, 28 May 2026 01:00:00 +0000
+
+rockchip-vaapi (1.0.6-1) noble; urgency=high
+
+  * Fix startup freeze: SyncSurface now actively drains MPP instead of
+    blocking on a pthread cond that can never be signalled (no decode thread).
+    Stores ctx_id back-reference in RKSurface; SyncSurface calls
+    decode_get_frame in a loop until the surface is ready or 2s timeout.
+  * Extract assign_mpp_frame() helper shared by EndPicture and SyncSurface,
+    eliminating duplicated frame routing/assignment code.
+
+ -- Eduardo García-Mádico Portabella <woodyst@gmail.com>  Tue, 27 May 2026 20:30:00 +0000
+
+rockchip-vaapi (1.0.5-1) noble; urgency=medium
+
+  * Fix video freeze (image static, audio continues) caused by three bugs:
+    - do_h264_decode: broke after first MPP output frame without checking if
+      it was the render_target; with H.264 B-frames this caused 2s timeouts.
+      Now drains until render_target.decoded, mirroring do_generic_decode.
+    - do_generic_decode FIFO: advancing dq_head past non-head PTS matches
+      orphaned earlier surfaces, causing 2s SyncSurface timeouts per frame.
+      Now only advances head when matched surface is at the front.
+    - CreateContext: MPP blocking decode_get_frame stalled Firefox's GPU
+      thread causing full process hangs. Now sets MPP_SET_OUTPUT_BLOCK=0.
+
+ -- Eduardo García-Mádico Portabella <woodyst@gmail.com>  Tue, 27 May 2026 20:10:00 +0000
+
 rockchip-vaapi (1.0.4-1) noble; urgency=low
 
   * Add MOZ_ENABLE_WAYLAND=1 to environment: Firefox uses Wayland natively

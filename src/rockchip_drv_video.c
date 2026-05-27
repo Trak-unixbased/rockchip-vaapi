@@ -571,10 +571,12 @@ static VAStatus rk_BeginPicture(VADriverContextP ctx,
     if (s) {
         pthread_mutex_lock(&s->lock);
         if (s->frame) { mpp_frame_deinit(&s->frame); s->frame = NULL; }
-        if (s->prime_fd >= 0) { close(s->prime_fd); s->prime_fd = -1; }
+        /* Keep prime_fd valid so ExportSurfaceHandle can return the previous
+         * frame (or placeholder) even if called before decode completes.
+         * assign_mpp_frame will close it and install the real decoded fd. */
         if (s->priv_buf) {
-            mpp_buffer_put(s->priv_buf);        s->priv_buf   = NULL;
-            mpp_buffer_group_put(s->priv_group); s->priv_group = NULL;
+            mpp_buffer_put(s->priv_buf);         s->priv_buf   = NULL;
+            mpp_buffer_group_put(s->priv_group);  s->priv_group = NULL;
         }
         s->decoded = false;
         s->ctx_id  = ctx_id;  /* back-link so SyncSurface can drain MPP */
@@ -638,19 +640,29 @@ static void assign_mpp_frame(MppFrame frame, RKContext *c, RKDriver *d)
     MppBuffer buf = mpp_frame_get_buffer(frame);
     int fd = buf ? dup(mpp_buffer_get_fd(buf)) : -1;
 
+    int fwidth  = (int)mpp_frame_get_width(frame);
+    int fheight = (int)mpp_frame_get_height(frame);
+    int fhs     = (int)mpp_frame_get_hor_stride(frame);
+    int fvs     = (int)mpp_frame_get_ver_stride(frame);
+
     pthread_mutex_lock(&s->lock);
     if (s->frame) mpp_frame_deinit(&s->frame);
     s->frame    = frame;
     if (s->prime_fd >= 0) close(s->prime_fd);
     s->prime_fd = fd;
-    s->hstride  = (int)mpp_frame_get_hor_stride(frame);
-    s->vstride  = (int)mpp_frame_get_ver_stride(frame);
+    s->hstride  = fhs;
+    s->vstride  = fvs;
     s->fmt      = mpp_frame_get_fmt(frame);
+    /* Update picture dimensions if MPP decoded at a different resolution
+     * (e.g. DASH quality change).  ExportSurfaceHandle uses these values;
+     * a mismatch between width and pitch causes NS_ERROR_DOM_MEDIA_FATAL_ERR. */
+    if (fwidth  > 0) s->width  = fwidth;
+    if (fheight > 0) s->height = fheight;
     s->decoded  = true;
     pthread_cond_signal(&s->cond);
     pthread_mutex_unlock(&s->lock);
-    LOG("assign_mpp_frame: surface=0x%x prime_fd=%d stride=%dx%d",
-        (unsigned)sid, fd, s->hstride, s->vstride);
+    LOG("assign_mpp_frame: surface=0x%x prime_fd=%d %dx%d stride=%dx%d",
+        (unsigned)sid, fd, s->width, s->height, fhs, fvs);
 }
 
 /* Build Annex B bitstream from VA-API buffers and send to MPP */
@@ -707,11 +719,19 @@ static VAStatus do_h264_decode(RKContext *c, RKDriver *d)
 
     if (!pkt_sz) { free(pkt_data); return VA_STATUS_SUCCESS; }
 
+    /* Pre-drain: consume frames MPP already has ready from previous packets */
+    {
+        MppFrame f = NULL;
+        while (c->mpi->decode_get_frame(c->mpp, &f) == MPP_OK && f) {
+            assign_mpp_frame(f, c, d);
+            f = NULL;
+        }
+    }
+
     /* send to MPP */
     MppPacket pkt = NULL;
     mpp_packet_init(&pkt, pkt_data, pkt_sz);
     mpp_packet_set_length(pkt, pkt_sz);
-    /* encode target surface id in pts for routing */
     mpp_packet_set_pts(pkt, (RK_S64)c->render_target);
 
     MPP_RET ret = c->mpi->decode_put_packet(c->mpp, pkt);
@@ -723,11 +743,7 @@ static VAStatus do_h264_decode(RKContext *c, RKDriver *d)
         return VA_STATUS_ERROR_DECODING_ERROR;
     }
 
-    /* Poll up to 500ms, draining all ready frames.
-     * H.264 B-frames cause MPP to reorder output — keep draining until the
-     * current render_target is decoded.  SyncSurface will drain further if
-     * the surface is still not ready after this window. */
-    for (int tries = 0; tries < 500; tries++) {
+    for (int tries = 0; tries < 100; tries++) {
         RKSurface *tgt = surface_by_id(d, c->render_target);
         if (tgt) {
             pthread_mutex_lock(&tgt->lock);
@@ -776,6 +792,17 @@ static VAStatus do_generic_decode(RKContext *c, RKDriver *d)
         return VA_STATUS_SUCCESS;
     }
 
+    /* Pre-drain: consume any frames MPP already has ready from previous
+     * packets.  Keyframes that timed out in the previous EndPicture poll
+     * window land here at the start of the next call. */
+    {
+        MppFrame f = NULL;
+        while (c->mpi->decode_get_frame(c->mpp, &f) == MPP_OK && f) {
+            assign_mpp_frame(f, c, d);
+            f = NULL;
+        }
+    }
+
     /* Enqueue this surface into the FIFO decode queue */
     c->decode_queue[c->dq_tail] = c->render_target;
     c->dq_tail = (c->dq_tail + 1) & 63;
@@ -797,9 +824,10 @@ static VAStatus do_generic_decode(RKContext *c, RKDriver *d)
         return VA_STATUS_ERROR_DECODING_ERROR;
     }
 
-    /* Poll up to 500ms draining ready frames.  SyncSurface will continue
-     * draining if the surface is still not ready after this window. */
-    for (int tries = 0; tries < 500; tries++) {
+    /* Poll up to 100ms.  Keyframes that miss this window are picked up either
+     * by SyncSurface's 2s drain loop or by the pre-drain of the next call. */
+    LOG("do_generic_decode: polling (pkt_sz=%zu)", pkt_sz);
+    for (int tries = 0; tries < 100; tries++) {
         RKSurface *tgt = surface_by_id(d, c->render_target);
         if (tgt) {
             pthread_mutex_lock(&tgt->lock);
@@ -853,7 +881,7 @@ static VAStatus rk_SyncSurface(VADriverContextP ctx, VASurfaceID id) {
     RKContext *c = context_by_id(d, cid);
     struct timespec deadline;
     clock_gettime(CLOCK_REALTIME, &deadline);
-    deadline.tv_sec += 2;
+    deadline.tv_sec += 3;
 
     LOG("SyncSurface: surface=0x%x draining MPP ctx=0x%x", id, cid);
     for (;;) {
