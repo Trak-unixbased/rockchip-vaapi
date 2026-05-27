@@ -458,6 +458,11 @@ static VAStatus rk_CreateContext(VADriverContextP ctx,
         c->mpi->control(c->mpp, MPP_DEC_SET_CFG, dec_cfg);
         mpp_dec_cfg_deinit(dec_cfg);
 
+        /* Non-blocking output: decode_get_frame returns immediately when
+         * nothing is ready, preventing Firefox's GPU thread from hanging. */
+        int block = 0;
+        c->mpi->control(c->mpp, MPP_SET_OUTPUT_BLOCK, (MppParam)&block);
+
         ret = mpp_init(c->mpp, MPP_CTX_DEC, coding);
         if (ret != MPP_OK) {
             mpp_destroy(c->mpp);
@@ -667,30 +672,37 @@ static VAStatus do_h264_decode(RKContext *c, RKDriver *d)
         return VA_STATUS_ERROR_DECODING_ERROR;
     }
 
-    /* poll for output frames (up to 200ms) */
-    for (int tries = 0; tries < 200; tries++) {
+    /* Poll up to 500ms, draining all ready frames.
+     * H.264 B-frames cause MPP to buffer and reorder output — keep draining
+     * until the current render_target surface is decoded. */
+    for (int tries = 0; tries < 500; tries++) {
+        /* Stop early once the surface we care about has its frame */
+        RKSurface *tgt = surface_by_id(d, c->render_target);
+        if (tgt) {
+            pthread_mutex_lock(&tgt->lock);
+            bool done = tgt->decoded;
+            pthread_mutex_unlock(&tgt->lock);
+            if (done) break;
+        }
+
         MppFrame frame = NULL;
         ret = c->mpi->decode_get_frame(c->mpp, &frame);
-        if (ret != MPP_OK) { usleep(1000); continue; }
-        if (!frame) { usleep(1000); continue; }
+        if (ret != MPP_OK || !frame) { usleep(1000); continue; }
 
         if (mpp_frame_get_info_change(frame)) {
-            /* resolution / format changed: commit new buffer info */
             c->mpi->control(c->mpp, MPP_DEC_SET_INFO_CHANGE_READY, NULL);
             mpp_frame_deinit(&frame);
             continue;
         }
 
-        /* Route frame to the surface identified by pts */
         VASurfaceID sid = (VASurfaceID)mpp_frame_get_pts(frame);
-        if (sid == 0) sid = c->render_target; /* fallback */
+        if (sid == 0) sid = c->render_target;
 
         RKSurface *s = surface_by_id(d, sid);
         if (!s) { mpp_frame_deinit(&frame); continue; }
 
         MppBuffer buf = mpp_frame_get_buffer(frame);
-        int fd = -1;
-        if (buf) fd = dup(mpp_buffer_get_fd(buf));
+        int fd = buf ? dup(mpp_buffer_get_fd(buf)) : -1;
 
         pthread_mutex_lock(&s->lock);
         if (s->frame) mpp_frame_deinit(&s->frame);
@@ -703,13 +715,8 @@ static VAStatus do_h264_decode(RKContext *c, RKDriver *d)
         s->decoded  = true;
         pthread_cond_signal(&s->cond);
         pthread_mutex_unlock(&s->lock);
-
-        /* MPP may have buffered more frames (B-frames), drain them */
-        /* EOS flag not in older MPP; always break after first output frame */
-        (void)mpp_frame_get_mode(frame);
-        break;
-        /* one frame per call is enough to unblock vaSyncSurface */
-        break;
+        LOG("do_h264_decode: frame decoded OK, surface=0x%x prime_fd=%d stride=%dx%d",
+            (unsigned)sid, fd, s->hstride, s->vstride);
     }
 
     return VA_STATUS_SUCCESS;
@@ -806,13 +813,10 @@ static VAStatus do_generic_decode(RKContext *c, RKDriver *d)
                     (unsigned long long)raw_pts, (unsigned)sid);
             }
         } else {
-            /* PTS valid — advance FIFO past this entry */
-            for (int qi = c->dq_head; qi != c->dq_tail; qi = (qi + 1) & 63) {
-                if (c->decode_queue[qi] == sid) {
-                    c->dq_head = (qi + 1) & 63;
-                    break;
-                }
-            }
+            /* PTS valid — advance FIFO head only if this surface is at the
+             * front.  Skipping earlier entries would orphan their surfaces. */
+            if (c->dq_head != c->dq_tail && c->decode_queue[c->dq_head] == sid)
+                c->dq_head = (c->dq_head + 1) & 63;
         }
 
         if (!s) { mpp_frame_deinit(&frame); continue; }
