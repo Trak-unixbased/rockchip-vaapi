@@ -54,13 +54,14 @@ int h264_write_sps(uint8_t *buf, size_t buf_size,
 
     bs_write(&bs, (uint32_t)profile_idc, 8);
 
-    /* constraint_set flags (derive from profile) */
+    /* constraint_set flags (derive from profile) + reserved.
+     * Must be exactly 8 bits: constraint_set0..5 (6) + reserved_zero_2bits (2). */
     int c0 = (profile_idc == 66) ? 1 : 0;
     int c1 = (profile_idc == 66 || profile_idc == 77) ? 1 : 0;
     bs_write(&bs, c0, 1);
     bs_write(&bs, c1, 1);
     bs_write(&bs, 0, 1); /* constraint_set2 */
-    bs_write(&bs, 0, 4); /* constraint_set3..5 + reserved_zero_2bits */
+    bs_write(&bs, 0, 5); /* constraint_set3..5 (3) + reserved_zero_2bits (2) */
 
     bs_write(&bs, 51, 8); /* level_idc = 5.1 (safe for all content) */
 
